@@ -1,0 +1,155 @@
+
+#include "SoftwareSerial.h"
+SoftwareSerial ss(A3, A4);
+volatile int flow_frequency1; // Measures flow sensor 1 pulses
+volatile int flow_frequency2; // Measures flow sensor 2 pulses
+float vol1 = 0.0, vol2 = 0.0, l_minute1, l_minute2;
+unsigned char flowsensor1 = 2; // Sensor 1 Input
+unsigned char flowsensor2 = 3; // Sensor 2 Input
+const int relayPin = 6;        // Relay control pin (choose any available digital pin)
+unsigned long currentTime;
+unsigned long cloopTime;
+#include <LiquidCrystal.h>
+LiquidCrystal lcd(13, 12, 11, 10, 9, 8);
+
+#define PUMP_1 5
+#define PUMP_2 7
+// Interrupt functions for both sensors
+void flow1() {
+  flow_frequency1++;
+}
+
+void flow2() {
+  flow_frequency2++;
+}
+
+void setup() {
+  pinMode(flowsensor1, INPUT);
+  pinMode(flowsensor2, INPUT);
+  pinMode(relayPin, OUTPUT);     // Set relay pin as output
+  digitalWrite(relayPin, HIGH);   // Initially keep relay off
+  digitalWrite(flowsensor1, HIGH); // Optional Internal Pull-Up
+  digitalWrite(flowsensor2, HIGH); // Optional Internal Pull-Up
+  Serial.begin(9600);
+  ss.begin(9600);
+  lcd.begin(16, 2);
+  pinMode(PUMP_1, OUTPUT);
+  pinMode(PUMP_2, OUTPUT);
+  // Setup Interrupts for both sensors
+  attachInterrupt(digitalPinToInterrupt(flowsensor1), flow1, RISING);
+  attachInterrupt(digitalPinToInterrupt(flowsensor2), flow2, RISING);
+  digitalWrite(PUMP_1, HIGH);
+  digitalWrite(PUMP_2, HIGH);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Water Flow Meter");
+  lcd.setCursor(0, 1);
+  lcd.print("Leak Detection");
+  currentTime = millis();
+  cloopTime = currentTime;
+}
+
+void loop() {
+  currentTime = millis();
+  if (currentTime >= (cloopTime + 1000)) {
+    cloopTime = currentTime; // Updates cloopTime
+
+    // Calculate flow rates for both sensors
+    if (flow_frequency1 != 0 || flow_frequency2 != 0) {
+      // Pulse frequency (Hz) = 7.5Q, Q is flow rate in L/min
+      l_minute1 = (flow_frequency1 / 7.5); // Flow rate in L/min for sensor 1
+      l_minute2 = (flow_frequency2 / 7.5); // Flow rate in L/min for sensor 2
+
+      // Convert to L/sec for comparison
+      float l_sec1 = l_minute1 / 60.0;
+      float l_sec2 = l_minute2 / 60.0;
+
+      // Update volumes
+      vol1 = vol1 + (l_minute1 / 60.0);
+      vol2 = vol2 + (l_minute2 / 60.0);
+
+      // Check for leakage (significant difference in flow rates)
+      float diff = abs(l_sec1 - l_sec2);
+      float avg_flow = (l_sec1 + l_sec2) / 2.0;
+      float threshold = avg_flow * 0.5; // 50% difference threshold
+
+      lcd.clear();
+      if (diff > threshold && avg_flow > 0.1) { // Minimum flow check to avoid false positives
+        digitalWrite(relayPin, LOW);  // Activate relay to trigger solenoid valve
+        delay(1000);
+        //        digitalWrite(PUMP_1, LOW);
+        //        digitalWrite(PUMP_2, LOW);
+        lcd.setCursor(0, 0);
+        lcd.print("Leak Detected!");
+        lcd.setCursor(0, 1);
+        lcd.print("S1:");
+        lcd.print(l_sec1);
+        lcd.print(" S2:");
+        lcd.print(l_sec2);
+
+        Serial.print("Leak Detected! S1: ");
+        Serial.print(l_sec1);
+        Serial.print(" L/Sec, S2: ");
+        Serial.print(l_sec2);
+        Serial.println(" L/Sec - Valve Closed");
+        sendSMS("7639011271", "Leak Detected");
+        firebase("*Leakage Detected#");
+      } else {
+        digitalWrite(relayPin, HIGH);  // Deactivate relay
+        lcd.setCursor(0, 0);
+        lcd.print("S1:");
+        lcd.print(l_sec1);
+        lcd.print(" L/S");
+        lcd.setCursor(0, 1);
+        lcd.print("S2:");
+        lcd.print(l_sec2);
+        lcd.print(" L/S");
+
+        Serial.print("S1: ");
+        Serial.print(l_sec1);
+        Serial.print(" L/Sec, S2: ");
+        Serial.print(l_sec2);
+        Serial.println(" L/Sec");
+      }
+      firebase("@" + String(l_sec1) + "#");
+      firebase("$" + String(l_sec2) + "#");
+      // Reset counters
+      flow_frequency1 = 0;
+      flow_frequency2 = 0;
+    } else {
+      digitalWrite(relayPin, HIGH);  // Deactivate relay when no flow
+      Serial.println("No flow detected");
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("No Flow");
+      lcd.setCursor(0, 1);
+      lcd.print("Vol1:");
+      lcd.print(vol1);
+      lcd.print("L");
+      firebase("*No Flow Detected#");
+    }
+  }
+}
+
+void sendSMS(String phoneNumber, String message) {
+  Serial.println("AT");
+  delay(2000);
+  Serial.println("AT+CMGF=1");
+  delay(2000);
+  Serial.println("AT+CMGS=\"+91" + String(phoneNumber) + "\"\r");
+  delay(2000);
+  Serial.println(message);
+  delay(2000);
+  Serial.write(char(26));
+  delay(2000);
+}
+
+void firebase(String s)
+{
+  Serial.println(s);
+  for (int i = 0; i < s.length(); i++)
+  {
+    ss.write(s[i]);
+  }
+  delay(300);
+}
